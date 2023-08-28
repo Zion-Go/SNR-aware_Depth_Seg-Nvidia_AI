@@ -20,14 +20,34 @@ import math
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, HistoryPolicy, QoSDurabilityPolicy
 import time
 import os
+import json
+from huggingface_hub import hf_hub_download
+from torch import nn
+import evaluate
+from rclpy.executors import MultiThreadedExecutor
+import threading
+# from mmseg.core.evaluation import eval_metrics, mean_dice, mean_iou
 
 torch.cuda.empty_cache()
+
+hf_dataset_identifier = "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
+repo_id = f"{hf_dataset_identifier}"
+filename = "config.json"
+model_config = json.load(open(hf_hub_download(repo_id=hf_dataset_identifier, filename=filename), "r"))
+id2label = model_config["id2label"] # {int(k): v for k, v in id2label.items()}
+label2id = model_config["label2id"] # {v: k for k, v in id2label.items()}
+
+num_labels = len(id2label)
+print("Labels:", num_labels)
+
+# metric = evaluate.load("mean_iou")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model_name = "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
 feature_extractor = SegformerFeatureExtractor.from_pretrained(model_name)
-model = SegformerForSemanticSegmentation.from_pretrained(model_name)
+model = SegformerForSemanticSegmentation.from_pretrained(model_name, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True)
 model.to(device)
+
 
 image_list = []
 
@@ -125,6 +145,8 @@ class SegFormer(Node):
     def __init__(self):
         super().__init__("SegFormer")
 
+        threading.Thread(target=self.seg_pub_callback).start()
+
         self.bridge = CvBridge()
         self.i = 1
         qos_policy = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -139,7 +161,7 @@ class SegFormer(Node):
         # self.seg_sub = message_filters.Subscriber(self, Image, "left/image_raw", qos_profile=qos_policy)
         self.seg_sub = self.create_subscription(Image, 'left/image_resize', self.raw_sub_callback, qos_profile=qos_policy)
         self.seg_publish = self.create_publisher(Image, 'left/image_seg', 20)
-        self.timer = self.create_timer(0.2, self.seg_pub_callback)
+        self.timer = self.create_timer(0.05, self.seg_pub_callback)
     
     def raw_sub_callback(self, raw_msg):
         self.get_logger().info(f'Processed_resize_image: {self.i}')
@@ -153,68 +175,189 @@ class SegFormer(Node):
     def seg_pub_callback(self):
         
         time1 = time.time()
+        fps = 0.0
 
-        for n in range(len(image_list)):
-            pixel_values = feature_extractor(image_list[n], return_tensors="pt").pixel_values.to(device)
+        for n in range(len(image_list) + 1):
+            if len(image_list) == 0:
+                continue
+            with torch.no_grad():
+                pixel_values = feature_extractor(image_list[n], return_tensors="pt").pixel_values.to(device)
 
-            outputs = model(pixel_values)
-            logits = outputs.logits
-            # print(self.image_pub.shape[0:2])
-            # cv2.imshow("raw", self.image_pub)
-            # cv2.waitKey(0)
+                outputs = model(pixel_values)
+                logits = outputs.logits
+                # loss = outputs.loss # for training stage
+                
+                # SemanticSegmenterOutput:
+                # loss (torch.FloatTensor of shape (1,), optional, returned when labels is provided) — Classification (or regression if config.num_labels==1) loss.
+                # logits (torch.FloatTensor of shape (batch_size, config.num_labels, logits_height, logits_width)) — Classification scores for each pixel.
+                # rescale logits to original image size
+                logits = nn.functional.interpolate(outputs.logits.detach().cpu(),
+                                size=image_list[n].shape[0:2], # (height, width)
+                                mode='bilinear',
+                                align_corners=False)
+                
+                # metrics for training stage
+                # currently using _compute instead of compute
+                # see this issue for more info: https://github.com/huggingface/evaluate/pull/328#issuecomment-1286866576
+                # metrics = metric.compute(
+                #         predictions=pred_labels,
+                #         references=labels,
+                #         num_labels=len(id2label),
+                #         ignore_index=0,
+                #         reduce_labels=feature_extractor.do_reduce_labels,
+                #     )
+                
+                torch.cuda.empty_cache()
+                
+                # Second, apply argmax on the class dimension
+                seg = logits.argmax(dim=1)[0]
+                color_seg = np.zeros((seg.shape[0], seg.shape[1], 3), dtype=np.uint8) # height, width, 3
+                palette = np.array(cityscapes_palette())
+                for label, color in enumerate(palette):
+                    color_seg[seg == label, :] = color
+                # Convert to BGR
+                color_seg = color_seg[..., ::-1]
+
+                # Show image + mask
+                img_seg = np.array(image_list[n]) * 0.5 + color_seg * 0.5
+                img_seg = img_seg.astype(np.uint8)
+                
+                time2 = time.time()
+                infer_time = time2 - time1
+                
+                # show the labels
+                
+                # calcualte the FPS
+                fps = fps + (1. / infer_time)
+
+                img_seg = cv2.putText(img_seg, "FPS = %.2f" % (fps), org=(0, 40), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(0, 0, 0), thickness=2)
+                img_seg = cv2.putText(img_seg, "Inference Time = %.2fs/frame" % (infer_time), org=(0, 20), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(0,0,0), thickness=2)
+                cv2.imshow("Seg", img_seg)
+                cv2.waitKey(1)
+
+                # remove the image seged
+                # del image_list[0:n]
+                image_list.clear()
+
+                # publish the seg images
+                seg_msg = self.bridge.cv2_to_imgmsg(np.array(img_seg), 'bgr8')
+                ros_time_msg = rclpy.clock.Clock().now().to_msg()
+                seg_msg.header.frame_id = "left_camera"
+                seg_msg.header.stamp = ros_time_msg
+
+                self.seg_publish.publish(seg_msg)
+
+    # https://github.com/NVlabs/SegFormer/blob/master/tests/test_metrics.py
+    # https://huggingface.co/blog/fine-tune-segformer
+        
+    # from torchvision.transforms import ColorJitter
+    # from transformers import SegformerFeatureExtractor
+
+    # feature_extractor = SegformerFeatureExtractor()
+    # jitter = ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1) 
+    
+    
+    # def test_metrics():
+    #     pred_size = (10, 30, 30)
+    #     num_classes = 19
+    #     ignore_index = 255
+    #     results = np.random.randint(0, num_classes, size=pred_size)
+    #     label = np.random.randint(0, num_classes, size=pred_size)
+    #     label[:, 2, 5:10] = ignore_index
+    #     all_acc, acc, iou = eval_metrics(
+    #         results, label, num_classes, ignore_index, metrics='mIoU')
+    #     all_acc_l, acc_l, iou_l = legacy_mean_iou(results, label, num_classes,
+    #                                             ignore_index)
+    #     assert all_acc == all_acc_l
+    #     assert np.allclose(acc, acc_l)
+    #     assert np.allclose(iou, iou_l)
+
+    #     all_acc, acc, dice = eval_metrics(
+    #         results, label, num_classes, ignore_index, metrics='mDice')
+    #     all_acc_l, acc_l, dice_l = legacy_mean_dice(results, label, num_classes,
+    #                                                 ignore_index)
+    #     assert all_acc == all_acc_l
+    #     assert np.allclose(acc, acc_l)
+    #     assert np.allclose(dice, dice_l)
+
+    #     all_acc, acc, iou, dice = eval_metrics(
+    #         results, label, num_classes, ignore_index, metrics=['mIoU', 'mDice'])
+    #     assert all_acc == all_acc_l
+    #     assert np.allclose(acc, acc_l)
+    #     assert np.allclose(iou, iou_l)
+    #     assert np.allclose(dice, dice_l)
+
+    #     results = np.random.randint(0, 5, size=pred_size)
+    #     label = np.random.randint(0, 4, size=pred_size)
+    #     all_acc, acc, iou = eval_metrics(
+    #         results,
+    #         label,
+    #         num_classes,
+    #         ignore_index=255,
+    #         metrics='mIoU',
+    #         nan_to_num=-1)
+    #     assert acc[-1] == -1
+    #     assert iou[-1] == -1
+
+    #     all_acc, acc, dice = eval_metrics(
+    #         results,
+    #         label,
+    #         num_classes,
+    #         ignore_index=255,
+    #         metrics='mDice',
+    #         nan_to_num=-1)
+    #     assert acc[-1] == -1
+    #     assert dice[-1] == -1
+
+    #     all_acc, acc, dice, iou = eval_metrics(
+    #         results,
+    #         label,
+    #         num_classes,
+    #         ignore_index=255,
+    #         metrics=['mDice', 'mIoU'],
+    #         nan_to_num=-1)
+    #     assert acc[-1] == -1
+    #     assert dice[-1] == -1
+    #     assert iou[-1] == -1
+
+    # def get_confusion_matrix(pred_label, label, num_classes, ignore_index):
+    #     """Intersection over Union
+    #     Args:
+    #         pred_label (np.ndarray): 2D predict map
+    #         label (np.ndarray): label 2D label map
+    #         num_classes (int): number of categories
+    #         ignore_index (int): index ignore in evaluation
+    #     """
+
+    #     mask = (label != ignore_index)
+    #     pred_label = pred_label[mask]
+    #     label = label[mask]
+
+    #     n = num_classes
+    #     inds = n * label + pred_label
+
+    #     mat = np.bincount(inds, minlength=n**2).reshape(n, n)
+
+    #     return mat
 
 
-            # First, rescale logits to original image size
-            logits = nn.functional.interpolate(outputs.logits.detach().cpu(),
-                            size=image_list[n].shape[0:2], # (height, width)
-                            mode='bilinear',
-                            align_corners=False)
-            
-            torch.cuda.empty_cache()
-            
-            # Second, apply argmax on the class dimension
-            seg = logits.argmax(dim=1)[0]
-            color_seg = np.zeros((seg.shape[0], seg.shape[1], 3), dtype=np.uint8) # height, width, 3
-            palette = np.array(cityscapes_palette())
-            for label, color in enumerate(palette):
-                color_seg[seg == label, :] = color
-            # Convert to BGR
-            color_seg = color_seg[..., ::-1]
 
-            # Show image + mask
-            img_seg = np.array(image_list[n]) * 0.5 + color_seg * 0.5
-            img_seg = img_seg.astype(np.uint8)
-            
-            time2 = time.time()
-            infer_time = time2 - time1
-            
-            # show the labels
-            
-            # calcualte the FPS
-            
-            img_seg = cv2.putText(img_seg, "Inference Time = %.2fs/frame" % (infer_time), org=(0, 20), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(0,0,0), thickness=2)
-            cv2.imshow("Seg", img_seg)
-            cv2.waitKey(1)
-
-            # remove the image seged
-            # del image_list[0:n]
-            image_list.clear()
-
-            # publish the seg images
-            seg_msg = self.bridge.cv2_to_imgmsg(np.array(img_seg), 'bgr8')
-            ros_time_msg = rclpy.clock.Clock().now().to_msg()
-            seg_msg.header.frame_id = "left_camera"
-            seg_msg.header.stamp = ros_time_msg
-
-            self.seg_publish.publish(seg_msg)
 
 def main(args=None):
     rclpy.init(args=args)
-    seg_publisher = SegFormer()
-    rclpy.spin(seg_publisher)
-    torch.cuda.empty_cache()
-    seg_publisher.destroy_node()
-    rclpy.shutdown()
+    try:
+        seg_publisher = SegFormer()
+        executor = MultiThreadedExecutor()
+        executor.add_node(seg_publisher)
+
+        try:
+            executor.spin()
+            # torch.cuda.empty_cache()
+        finally:
+            executor.shutdown()
+            seg_publisher.destroy_node()
+    finally:
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
