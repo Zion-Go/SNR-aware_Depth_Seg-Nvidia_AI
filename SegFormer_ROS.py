@@ -161,7 +161,7 @@ class SegFormer(Node):
         # self.seg_sub = message_filters.Subscriber(self, Image, "left/image_raw", qos_profile=qos_policy)
         self.seg_sub = self.create_subscription(Image, 'left/image_resize', self.raw_sub_callback, qos_profile=qos_policy)
         self.seg_publish = self.create_publisher(Image, 'left/image_seg', 20)
-        self.timer = self.create_timer(0.05, self.seg_pub_callback)
+        self.timer = self.create_timer(0.2, self.seg_pub_callback)
     
     def raw_sub_callback(self, raw_msg):
         self.get_logger().info(f'Processed_resize_image: {self.i}')
@@ -209,14 +209,19 @@ class SegFormer(Node):
                 
                 torch.cuda.empty_cache()
                 
-                # Second, apply argmax on the class dimension
+                # apply argmax on the class dimension
                 seg = logits.argmax(dim=1)[0]
+                # print(type(logits), seg.shape) # tensor, 400x600
                 color_seg = np.zeros((seg.shape[0], seg.shape[1], 3), dtype=np.uint8) # height, width, 3
                 palette = np.array(cityscapes_palette())
                 for label, color in enumerate(palette):
                     color_seg[seg == label, :] = color
+                    
+                    # print(label) # 0-18
+
                 # Convert to BGR
                 color_seg = color_seg[..., ::-1]
+                
 
                 # Show image + mask
                 img_seg = np.array(image_list[n]) * 0.5 + color_seg * 0.5
@@ -225,15 +230,23 @@ class SegFormer(Node):
                 time2 = time.time()
                 infer_time = time2 - time1
                 
-                # show the labels
-                
                 # calcualte the FPS
                 fps = fps + (1. / infer_time)
 
                 img_seg = cv2.putText(img_seg, "FPS = %.2f" % (fps), org=(0, 40), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(0, 0, 0), thickness=2)
                 img_seg = cv2.putText(img_seg, "Inference Time = %.2fs/frame" % (infer_time), org=(0, 20), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(0,0,0), thickness=2)
+                
                 cv2.imshow("Seg", img_seg)
-                cv2.waitKey(1)
+                key = cv2.waitKey(1)
+
+                # save the outputs
+                path = f"/workspaces/isaac_ros-dev/src/isaac_ros_common/ros2bag/img_seg_{self.i}.jpg"
+                # leftpath = path + f"/left/"+"left_" + {self.i} + ".jpg"
+                # rightpath=path + f"/right/"+ "right_" + {self.i} + ".jpg"
+                if key == ord("s"):
+        
+                    cv2.imwrite(path, img_seg)
+                    print("img_seg saved to: " + path)
 
                 # remove the image seged
                 # del image_list[0:n]
