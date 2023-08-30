@@ -180,7 +180,7 @@ class Stereo_Depth(Node):
 
             # 3D coordiantes, where z is the distance
             threeD = cv2.reprojectImageTo3D(disparity.astype(np.float32), calibration_configs.Q, handleMissingValues=True)
-            threeD = threeD  *1.6 #* 16
+            threeD = threeD  *16 #* 16
             # (1200+1000)/2, (200+500)/2
             # x1, y1 = 160, 780
             # distance1 = math.sqrt(threeD[y1][x1][0]**2 + threeD[y1][x1][1]**2 + threeD[y1][x1][2]**2)
@@ -235,11 +235,18 @@ class Stereo_Depth(Node):
             # print('abs==========', abs_list)
             # print('abs2==========', abs_list2)
             # plot_error(self.i, self.ave_dis1, self.ave_dis2)
-            # cv2.setMouseCallback('disp', onmouse_pick_points, threeD) # self.onmouse_pick_points
+            cv2.setMouseCallback('disp', onmouse_pick_points, threeD) # self.onmouse_pick_points
             # ros_time = rclpy.clock.Clock().now().to_msg()
             # cv2.imshow('disp color', self.disp_color)
             cv2.imshow('disp', self.disp)
-            cv2.waitKey(1)
+            key = cv2.waitKey(1)
+            # save the outputs
+            path = f"/workspaces/isaac_ros-dev/src/isaac_ros_common/ros2bag/depth_{self.i}.jpg"
+            
+            if key == ord("s"):
+    
+                cv2.imwrite(path, self.disp)
+                print("depth saved to: " + path)
             
 
 

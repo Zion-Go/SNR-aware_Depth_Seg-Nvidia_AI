@@ -32,15 +32,15 @@ class ImageResize(Node):
                                 depth=20,
                                 durability=QoSDurabilityPolicy.VOLATILE)
         
-        self.resizel_sub = message_filters.Subscriber(self, Image, "/left/image_raw", qos_profile=qos_policy)
-        self.resizer_sub = message_filters.Subscriber(self, Image, "/right/image_raw", qos_profile=qos_policy)
+        self.rawl_sub = message_filters.Subscriber(self, Image, "/left/image_raw", qos_profile=qos_policy)
+        self.rawr_sub = message_filters.Subscriber(self, Image, "/right/image_raw", qos_profile=qos_policy)
 
-        sync_resize = message_filters.ApproximateTimeSynchronizer(
-        [self.resizel_sub, self.resizer_sub],
+        sync_raw = message_filters.ApproximateTimeSynchronizer(
+        [self.rawl_sub, self.rawr_sub],
         queue_size=200,
         slop=0.05,
         allow_headerless=False)
-        sync_resize.registerCallback(self.sync_resize_callback)
+        sync_raw.registerCallback(self.sync_raw_callback)
 
         self.resizel_publish = self.create_publisher(Image, 'left/image_resize', 20)
         self.resizer_publish = self.create_publisher(Image, 'right/image_resize', 20)
@@ -48,17 +48,17 @@ class ImageResize(Node):
         self.timerl = self.create_timer(0.1, self.resize_pub_callback)
         self.timerr = self.create_timer(0.1, self.resize_pub_callback)
 
-    def sync_resize_callback(self, resizel_sub, resizer_sub):
+    def sync_raw_callback(self, rawl_sub, rawr_sub):
         ros_time = rclpy.clock.Clock().now().to_msg()
-        resizel_sub.header.stamp = ros_time
-        resizel_sub.header.stamp = ros_time
+        rawl_sub.header.stamp = ros_time
+        rawr_sub.header.stamp = ros_time
        
-        if resizel_sub.header.frame_id == "left_camera":
-            self.left_raw = self.bridge.imgmsg_to_cv2(resizel_sub, "bgr8")
+        if rawl_sub.header.frame_id == "left_camera":
+            self.left_raw = self.bridge.imgmsg_to_cv2(rawl_sub, "bgr8")
             left_raw_list.append(self.left_raw)
             
-        if resizer_sub.header.frame_id == "right_camera":
-            self.right_raw = self.bridge.imgmsg_to_cv2(resizer_sub, "bgr8")
+        if rawr_sub.header.frame_id == "right_camera":
+            self.right_raw = self.bridge.imgmsg_to_cv2(rawr_sub, "bgr8")
             right_raw_list.append(self.right_raw)
             
 
@@ -84,7 +84,20 @@ class ImageResize(Node):
             # cv2.imshow("Resize_left", image_resizel)
             # cv2.imshow("Resize_right", image_resizer)
             # cv2.waitKey(1)
+            # save the outputs
+            leftpath = f"/workspaces/isaac_ros-dev/src/isaac_ros_common/ros2bag/resize_left_{self.i}.jpg"
+            rightpath = f"/workspaces/isaac_ros-dev/src/isaac_ros_common/ros2bag/resize_right_{self.i}.jpg"
+            # leftpath = path + f"/left/"+"left_" + {self.i} + ".jpg"
+            # rightpath=path + f"/right/"+ "right_" + {self.i} + ".jpg"
+            # if key == ord("s"):
+    
+            # cv2.imwrite(leftpath, image_resizel)
+            # cv2.imwrite(rightpath, image_resizer)
+            # print("img_left_resize saved to: " + leftpath)
+            # print("img_right_resize saved to: " + rightpath)
+
             self.get_logger().info(f'Resized_left_raw_image-{image_resizel.shape}: {self.i}')
+            self.get_logger().info(f'Resized_right_raw_image-{image_resizer.shape}: {self.i}')
             self.i += 1
 
             ros_time = rclpy.clock.Clock().now().to_msg()
