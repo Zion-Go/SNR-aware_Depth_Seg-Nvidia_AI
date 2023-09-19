@@ -1,6 +1,0 @@
-source;share/stereo_disp_vpi/hook/pythonpath.ps1
-source;share/stereo_disp_vpi/hook/pythonpath.dsv
-source;share/stereo_disp_vpi/hook/pythonpath.sh
-source;share/stereo_disp_vpi/hook/ament_prefix_path.ps1
-source;share/stereo_disp_vpi/hook/ament_prefix_path.dsv
-source;share/stereo_disp_vpi/hook/ament_prefix_path.sh
