@@ -1,0 +1,34 @@
+FROM ros:galactic-ros-base-focal
+
+ENV DEBIAN_FRONTEND noninteractive
+
+# Install ROS packages
+RUN apt-get update && apt-get install -y \
+    ros-galactic-ros-base \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install libs
+RUN apt-get update && apt-get install -y \
+    wget vim
+
+# Set docker container username
+ARG USER=docker_tis_driver
+ARG UID=1000
+ARG GID=1000
+ARG PW=user 
+RUN useradd -m ${USER} --uid=${UID} && echo "${USER}:${PW}" | chpasswd
+
+# Install TIS driver
+RUN cd /home/${USER} && wget -c https://s1-dl.theimagingsource.com/api/2.5/packages/downloads-linux/sdk/tiscamera2004/6b7a920b-a433-5bc6-baf6-9d0dc02d4db0/tiscamera_1.0.0.4005_amd64_ubuntu_2004.deb && \
+    apt install -y ./tiscamera_1.0.0.4005_amd64_ubuntu_2004.deb && \
+    rm -rf tiscamera_1.0.0.4005_amd64_ubuntu_2004.deb
+
+# Alternative TIS driver install from Github
+# RUN cd /home/${USER} && git clone https://github.com/TheImagingSource/tiscamera.git && cd tiscamera && \
+#     ./scripts/dependency-manager install -y && mkdir build && cd build && \
+#     cmake -DTCAM_BUILD_ARAVIS=OFF .. && make && make install
+
+WORKDIR /home/${USER}
+RUN cd /home/${USER} && mkdir tis_repos && chown -R ${UID}:${GID} ./
+
+USER ${UID}:${GID}

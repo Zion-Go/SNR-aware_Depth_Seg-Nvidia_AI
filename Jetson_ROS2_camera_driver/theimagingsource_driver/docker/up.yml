@@ -1,0 +1,20 @@
+version: "3.8"
+services:
+    tis_driver:
+        image: ${ARCH}galactic/tis_driver:${TAG}
+        network_mode: host
+        pid: host
+        container_name: tis_driver
+        env_file: $ENV_FILE
+        environment:
+            - DISPLAY=$DISPLAY
+        privileged: true
+        user: root
+        tty: true
+        volumes:
+            - type: bind
+              source: ${PRODUCTION_PATH}/../tis_repos
+              target: /home/docker_tis_driver/tis_repos
+            - /dev:/dev:rw
+        command: bash -c "python3 tis_repos/tiscamera/examples/python/00-list-devices.py;"
+

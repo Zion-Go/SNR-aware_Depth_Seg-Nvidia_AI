@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+    tis_driver:
+        image: ${ARCH}galactic/tis_driver:${TAG}
+        build:
+            context: ${PRODUCTION_PATH}
+            dockerfile: Dockerfile.${ARCH}
+        container_name: tis_driver
